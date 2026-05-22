@@ -673,6 +673,7 @@ VioGpuDeviceAllocation::VioGpuDeviceAllocation(VioGpuDevice *device, VioGpuAlloc
     m_pAllocation = allocation;
     m_pDevice = device;
     m_RefCount = 1;
+    m_attached = false;
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<---> %s res_id=%d ctx=%p\n",
                                    __FUNCTION__,
@@ -693,6 +694,7 @@ VioGpuDeviceAllocation::VioGpuDeviceAllocation(VioGpuDevice *device, VioGpuAlloc
     }
 
     m_pDevice->GetCtrlQueue()->CtxResource(true, m_pDevice->m_Context.GetId(), m_pAllocation->GetId());
+    m_attached = true;
     m_AttachedToVirgl = false;
 }
 
@@ -721,7 +723,10 @@ VioGpuDeviceAllocation::~VioGpuDeviceAllocation()
         //m_pAllocation->UnmapBlob(m_pDevice->m_Context.GetId(), NULL, NULL);
     }
 
-    m_pDevice->GetCtrlQueue()->CtxResource(false, m_pDevice->m_Context.GetId(), m_pAllocation->GetId());
+    if (m_attached)
+    {
+        m_pDevice->GetCtrlQueue()->CtxResource(false, m_pDevice->m_Context.GetId(), m_pAllocation->GetId());
+    }
 
     if (m_AttachedToVirgl)
     {
