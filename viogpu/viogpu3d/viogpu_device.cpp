@@ -456,6 +456,11 @@ NTSTATUS VioGpuDevice::Present(_Inout_ DXGKARG_PRESENT *pPresent)
               pPresent->Flags.Rotate ? "Rotate" : ""));
 
     VioGpuCommand *cmd = new (NonPagedPoolNx) VioGpuCommand(m_pAdapter);
+    if (!cmd)
+    {
+        DbgPrint(TRACE_LEVEL_ERROR, ("%s VioGpuCommand allocation failed\n", __FUNCTION__));
+        return STATUS_NO_MEMORY;
+    }
     if (pPresent->pDmaBuffer)
     {
         void **privateData = (void **)pPresent->pDmaBufferPrivateData;
@@ -627,6 +632,11 @@ NTSTATUS VioGpuDevice::Render(DXGKARG_RENDER *pRender)
     }
 
     VioGpuCommand *cmd = new (NonPagedPoolNx) VioGpuCommand(m_pAdapter);
+    if (!cmd)
+    {
+        DbgPrint(TRACE_LEVEL_ERROR, ("%s VioGpuCommand allocation failed\n", __FUNCTION__));
+        return STATUS_NO_MEMORY;
+    }
     if (pRender->pDmaBuffer)
     {
         void **privateData = (void **)pRender->pDmaBufferPrivateData;
