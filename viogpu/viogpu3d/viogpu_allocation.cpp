@@ -252,9 +252,14 @@ VOID VioGpuAllocation::MapBlob(UINT ctx_id, void (*complete_cb)(void *, void *, 
 {
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s res_id=%d IsBlob=%d\n", __FUNCTION__, m_Id, m_IsBlob));
 
-    if (!m_IsBlob || m_Blob.Mapped) return;
+    if (!m_IsBlob) return;
 
+    // m_Blob.Mapped is mutated under m_Lock by MapBlobLocked /
+    // UnmapBlobLocked, so the already-mapped check must run under
+    // the same lock to avoid racing a concurrent unmap into a stale
+    // skip-the-map decision.
     auto lock_guard = LockGuard();
+    if (m_Blob.Mapped) return;
     MapBlobLocked(ctx_id, complete_cb, complete_ctx);
 }
 
@@ -262,9 +267,10 @@ VOID VioGpuAllocation::UnmapBlob(UINT ctx_id, void (*complete_cb)(void *, void *
 {
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s res_id=%d IsBlob=%d\n", __FUNCTION__, m_Id, m_IsBlob));
 
-    if (!m_IsBlob || !m_Blob.Mapped) return;
+    if (!m_IsBlob) return;
 
     auto lock_guard = LockGuard();
+    if (!m_Blob.Mapped) return;
     UnmapBlobLocked(ctx_id, complete_cb, complete_ctx);
 }
 
