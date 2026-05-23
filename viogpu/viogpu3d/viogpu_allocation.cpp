@@ -76,7 +76,17 @@ void VioGpuAllocation::AddRef()
 void VioGpuAllocation::Release()
 {
     LONG newCount = InterlockedDecrement(&m_refCount);
-    ASSERT(newCount >= 0);
+    if (newCount < 0)
+    {
+        // Underflow indicates double-Release somewhere. ASSERT trips
+        // in DBG; in retail, leak the object rather than free freed
+        // memory.
+        DbgPrint(TRACE_LEVEL_ERROR,
+                 ("%s refcount underflow alloc=%p count=%d\n",
+                  __FUNCTION__, this, newCount));
+        ASSERT(newCount >= 0);
+        return;
+    }
     if (newCount == 0)
     {
         delete this;
@@ -297,12 +307,26 @@ void VioGpuAllocation::UnmarkBusy()
     KIRQL oldIrql;
     KeAcquireSpinLock(&m_busyLock, &oldIrql);
     LONG remaining = InterlockedDecrement(&m_busy);
-    if (remaining == 0)
+    if (remaining < 0)
+    {
+        // Underflow: more UnmarkBusy than MarkBusy. Clamp back to 0
+        // and signal so a waiter doesn't see a permanently-negative
+        // counter. DBG trips the assert below.
+        InterlockedExchange(&m_busy, 0);
+        KeSetEvent(&m_busyNotification, IO_NO_INCREMENT, FALSE);
+    }
+    else if (remaining == 0)
     {
         KeSetEvent(&m_busyNotification, IO_NO_INCREMENT, FALSE);
     }
     KeReleaseSpinLock(&m_busyLock, oldIrql);
 
+    if (remaining < 0)
+    {
+        DbgPrint(TRACE_LEVEL_ERROR,
+                 ("%s busy underflow res_id=%d remaining=%d\n",
+                  __FUNCTION__, m_Id, remaining));
+    }
     ASSERT(remaining >= 0);
 }
 
