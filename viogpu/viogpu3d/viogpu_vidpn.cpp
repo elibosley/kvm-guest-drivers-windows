@@ -1667,6 +1667,10 @@ PBYTE VioGpuVidPN::GetEdidData(UINT Id)
 {
     PAGED_CODE();
 
+    if (Id >= MAX_CHILDREN)
+    {
+        return NULL;
+    }
     return m_bEDID ? m_EDIDs[Id] : (PBYTE)(g_gpu_edid);
 }
 
