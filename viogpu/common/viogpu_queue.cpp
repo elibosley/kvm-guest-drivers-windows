@@ -1251,9 +1251,28 @@ UINT CtrlQueue::QueueBuffer(PGPU_VBUFFER buf)
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--> %s sgleft %d\n", __FUNCTION__, sgleft));
 
     Lock(&SavedIrql);
-    ret = AddBuf(&sg[0], outcnt, incnt, buf, NULL, 0);
+    int rc = AddBuf(&sg[0], outcnt, incnt, buf, NULL, 0);
     Kick();
     Unlock(SavedIrql);
+
+    if (rc < 0)
+    {
+        // Submission failed (queue closed, queue full, or otherwise).
+        // The vbuf is sitting on m_InUseBufs from AllocCmd but will
+        // never be dequeued, so any sync caller waiting on the
+        // completion would hang. Fire the callback so the waiter
+        // unblocks, then release the vbuf to free its payloads.
+        DbgPrint(TRACE_LEVEL_ERROR,
+                 ("<--> %s AddBuf failed rc=%d; firing complete_cb and releasing\n",
+                  __FUNCTION__, rc));
+        if (buf->complete_cb)
+        {
+            buf->complete_cb(buf->complete_ctx, buf->buf, buf->resp_buf);
+        }
+        ReleaseBuffer(buf);
+        return (UINT)-1;
+    }
+    ret = (UINT)rc;
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s ret = %d\n", __FUNCTION__, ret));
 
@@ -1322,20 +1341,53 @@ void VioGpuBuf::Close(void)
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
 
+    // Drain in-use vbufs first: fire each callback so any sync caller
+    // (Ask*, CreateResourceBlob) waiting on a wait-context wakes up
+    // and unwinds, rather than blocking on a vbuf that the host can
+    // no longer respond to. Collect under the lock, then process
+    // outside it so callbacks that take other locks (e.g. the queue
+    // lock during ReleaseBuffer) don't deadlock.
+    LIST_ENTRY drained;
+    InitializeListHead(&drained);
+
     KeAcquireSpinLock(&m_SpinLock, &OldIrql);
     while (!IsListEmpty(&m_InUseBufs))
     {
-        LIST_ENTRY *pListItem = RemoveHeadList(&m_InUseBufs);
-        if (pListItem)
-        {
-            PGPU_VBUFFER pvbuf = CONTAINING_RECORD(pListItem, GPU_VBUFFER, list_entry);
-            ASSERT(pvbuf);
-            ASSERT(pvbuf->resp_size <= MAX_INLINE_RESP_SIZE);
-
-            delete[] reinterpret_cast<PBYTE>(pvbuf);
-            --m_uCount;
-        }
+        PLIST_ENTRY entry = RemoveHeadList(&m_InUseBufs);
+        InsertTailList(&drained, entry);
     }
+    KeReleaseSpinLock(&m_SpinLock, OldIrql);
+
+    while (!IsListEmpty(&drained))
+    {
+        PLIST_ENTRY entry = RemoveHeadList(&drained);
+        PGPU_VBUFFER pvbuf = CONTAINING_RECORD(entry, GPU_VBUFFER, list_entry);
+
+        if (pvbuf->complete_cb)
+        {
+            pvbuf->complete_cb(pvbuf->complete_ctx, pvbuf->buf, pvbuf->resp_buf);
+        }
+
+        if (pvbuf->resp_buf && pvbuf->resp_size > MAX_INLINE_RESP_SIZE)
+        {
+            delete[] reinterpret_cast<PBYTE>(pvbuf->resp_buf);
+            pvbuf->resp_buf = NULL;
+            pvbuf->resp_size = 0;
+        }
+        if (pvbuf->data_buf && pvbuf->data_size)
+        {
+            delete[] reinterpret_cast<PBYTE>(pvbuf->data_buf);
+            pvbuf->data_buf = NULL;
+            pvbuf->data_size = 0;
+        }
+
+        KeAcquireSpinLock(&m_SpinLock, &OldIrql);
+        delete[] reinterpret_cast<PBYTE>(pvbuf);
+        --m_uCount;
+        KeReleaseSpinLock(&m_SpinLock, OldIrql);
+    }
+
+    KeAcquireSpinLock(&m_SpinLock, &OldIrql);
 
     while (!IsListEmpty(&m_FreeBufs))
     {
