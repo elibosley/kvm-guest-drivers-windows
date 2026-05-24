@@ -30,7 +30,7 @@ VioGpuAllocation::VioGpuAllocation(VioGpuAdapter *adapter, VIOGPU_RESOURCE_BLOB_
     m_busy = 0;
     KeInitializeSpinLock(&m_busyLock);
 
-    KeInitializeSpinLock(&m_Lock);
+    ExInitializeFastMutex(&m_Lock);
 
     m_refCount = 1;
     m_deferReleaseItem = IoAllocateWorkItem(m_adapter->GetPhysicalDevice());
@@ -60,7 +60,7 @@ VioGpuAllocation::VioGpuAllocation(VioGpuAdapter *adapter, VIOGPU_RESOURCE_3D_OP
     m_busy = 0;
     KeInitializeSpinLock(&m_busyLock);
 
-    KeInitializeSpinLock(&m_Lock);
+    ExInitializeFastMutex(&m_Lock);
 
     m_refCount = 1;
     m_deferReleaseItem = IoAllocateWorkItem(m_adapter->GetPhysicalDevice());
@@ -160,37 +160,15 @@ VioGpuAllocation::~VioGpuAllocation(void)
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
 }
 
-_IRQL_requires_max_(DISPATCH_LEVEL) _IRQL_saves_global_(OldIrql, Irql) _IRQL_raises_(DISPATCH_LEVEL) VOID VioGpuAllocation::Lock(KIRQL *Irql)
+_IRQL_requires_max_(APC_LEVEL) VOID VioGpuAllocation::Lock()
 {
-    KIRQL SavedIrql = KeGetCurrentIrql();
-    DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s at IRQL %d\n", __FUNCTION__, SavedIrql));
-
-    if (SavedIrql < DISPATCH_LEVEL)
-    {
-        KeAcquireSpinLock(&m_Lock, &SavedIrql);
-    }
-    else if (SavedIrql == DISPATCH_LEVEL)
-    {
-        KeAcquireSpinLockAtDpcLevel(&m_Lock);
-    }
-    else
-    {
-        VioGpuDbgBreak();
-    }
-
-   *Irql = SavedIrql;
+    DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
+    ExAcquireFastMutex(&m_Lock);
 }
 
-_IRQL_requires_(DISPATCH_LEVEL) _IRQL_restores_global_(OldIrql, Irql) VOID VioGpuAllocation::Unlock(KIRQL Irql)
+_IRQL_requires_max_(APC_LEVEL) VOID VioGpuAllocation::Unlock()
 {
-    if (Irql < DISPATCH_LEVEL)
-    {
-        KeReleaseSpinLock(&m_Lock, Irql);
-    }
-    else
-    {
-        KeReleaseSpinLockFromDpcLevel(&m_Lock);
-    }
+    ExReleaseFastMutex(&m_Lock);
 }
 
 void VioGpuAllocation::AttachBacking(MDL *pMDL, size_t pageCount, size_t pageOffset)
@@ -280,14 +258,14 @@ VOID VioGpuAllocation::UnmapBlob(UINT ctx_id, void (*complete_cb)(void *, void *
     UnmapBlobLocked(ctx_id, complete_cb, complete_ctx);
 }
 
-VioGpuAllocationSpinLockGuard::VioGpuAllocationSpinLockGuard(VioGpuAllocation *allocation) : m_Allocation(allocation)
+VioGpuAllocationLockGuard::VioGpuAllocationLockGuard(VioGpuAllocation *allocation) : m_Allocation(allocation)
 {
-    m_Allocation->Lock(&m_Irql);
+    m_Allocation->Lock();
 }
 
-VioGpuAllocationSpinLockGuard::~VioGpuAllocationSpinLockGuard()
+VioGpuAllocationLockGuard::~VioGpuAllocationLockGuard()
 {
-    m_Allocation->Unlock(m_Irql);
+    m_Allocation->Unlock();
 }
 
 PAGED_CODE_SEG_BEGIN
