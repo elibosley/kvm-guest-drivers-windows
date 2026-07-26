@@ -48,6 +48,56 @@ jobs:
           }
           Get-Item $driver | Format-List FullName, Length, LastWriteTime
 
+      - name: Assemble and test-sign installable package
+        shell: pwsh
+        run: |
+          $releaseZip = "viogpu3d-v0.1-x64.zip"
+          $releaseUrl = "https://github.com/osy/kvm-guest-drivers-windows/releases/download/v0.1/viogpu3d_x64.zip"
+          Invoke-WebRequest $releaseUrl -OutFile $releaseZip
+          Expand-Archive $releaseZip -DestinationPath release
+
+          $package = "viogpu3d-test-package"
+          New-Item -ItemType Directory -Path $package | Out-Null
+          Copy-Item "release\drivers\viogpu3d\*" $package
+          Move-Item "$package\viogpu3d.cat" "release\viogpu3d.cat"
+          Copy-Item `
+            "viogpu\viogpu3d\objfre_win11_amd64\amd64\viogpu3d.sys" `
+            "$package\viogpu3d.sys"
+          Copy-Item `
+            "viogpu\viogpu3d\objfre_win11_amd64\amd64\viogpu3d.inf" `
+            "$package\viogpu3d.inf"
+
+          $cert = New-SelfSignedCertificate `
+            -Subject "CN=Triton Neptune CI Test Driver" `
+            -Type CodeSigningCert `
+            -HashAlgorithm SHA256 `
+            -KeyExportPolicy Exportable `
+            -CertStoreLocation "Cert:\CurrentUser\My"
+          Export-Certificate `
+            -Cert $cert `
+            -FilePath "$package\triton-neptune-ci-test.cer" | Out-Null
+
+          $kitBin = "${env:ProgramFiles(x86)}\Windows Kits\10\bin"
+          $signTool = Get-ChildItem $kitBin -Recurse -Filter signtool.exe |
+            Where-Object FullName -Match '\\x64\\signtool.exe$' |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1 -ExpandProperty FullName
+          $inf2Cat = Get-ChildItem $kitBin -Recurse -Filter Inf2Cat.exe |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1 -ExpandProperty FullName
+          if (!$signTool -or !$inf2Cat) {
+            throw "signtool.exe or Inf2Cat.exe was not found in the hosted WDK"
+          }
+
+          & $signTool sign /v /fd SHA256 /sha1 $cert.Thumbprint `
+            "$package\viogpu3d.sys"
+          if ($LASTEXITCODE) { throw "signtool failed for viogpu3d.sys" }
+          & $inf2Cat /driver:$package /os:10_X64
+          if ($LASTEXITCODE) { throw "Inf2Cat failed for the assembled package" }
+          & $signTool sign /v /fd SHA256 /sha1 $cert.Thumbprint `
+            "$package\viogpu3d.cat"
+          if ($LASTEXITCODE) { throw "signtool failed for viogpu3d.cat" }
+
       - name: Upload viogpu3d package
         uses: actions/upload-artifact@v4
         with:
@@ -55,3 +105,4 @@ jobs:
           if-no-files-found: error
           path: |
             viogpu/viogpu3d/objfre_win11_amd64/amd64/**
+            viogpu3d-test-package/**
